@@ -39,7 +39,7 @@ class VideoThread(QThread):
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, input_frame)
         self.playback_rate = playback_rate
         self.seconds_before_loop = seconds_before_loop
-        self.fps_begin = time.time()
+        self.time_since_last_frame = time.time()
         self.pause_pressed = False
         self.reset_flag = False
         self.speed_ratio = 1
@@ -72,9 +72,26 @@ class VideoThread(QThread):
         """Run through video 
         """
         frame_begin_time = time.perf_counter()
-        count = -1
+        count = 0
+        print("Initializing image...")
+        ret, frame = self.cap.read() # takes time, calling grab instead of read will allow us to move forward in the frame method
+        if ret:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            height, width, channel = frame.shape
+            img = QImage(frame, width, height, QImage.Format_RGB888)
+            pix = QPixmap.fromImage(img)
+
+        
+        frames_before_loop = self.seconds_before_loop * self.cap.get(cv2.CAP_PROP_FPS)
+        
+        # How many fames have passed in any given amount of time
+        frames_since_begin = (self.cap.get(cv2.CAP_PROP_POS_FRAMES) - self.input_frame)
+
+        count=0
         while self._run_flag:
-            if(self.input_frame != self.latest_input_frame):
+            num_frames_to_skip = max(0,  math.ceil((((self.cap.get(cv2.CAP_PROP_FPS) * (self.speed_ratio))) / (self.playback_rate)) - 1))
+            
+            if(self.input_frame != self.latest_input_frame): # Logic for if the red line is moved
 
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.input_frame)
 
@@ -82,41 +99,56 @@ class VideoThread(QThread):
             if(self.pause_pressed):
                 continue
                 
-            if(time.time() - self.fps_begin) < ((1.0/self.cap.get(cv2.CAP_PROP_FPS) * (1.0/self.speed_ratio))):
-                continue
+            # if(time.time() - self.time_since_last_frame) < ((1.0/self.cap.get(cv2.CAP_PROP_FPS) * (1.0/self.speed_ratio))):
+            #     continue
             count+=1
-            # print(math.floor(((1.0/self.cap.get(cv2.CAP_PROP_FPS) * (self.speed_ratio))) / (self.playback_rate)))
-            # print(((1.0/self.cap.get(cv2.CAP_PROP_FPS) * (self.speed_ratio))))
-            if count % math.ceil(((self.cap.get(cv2.CAP_PROP_FPS) * (self.speed_ratio))) / (self.playback_rate)) > 0:
-                self.cap.grab()
-                continue
-            ret, frame = self.cap.read() # takes time, calling grab instead of read will allow us to move forward in the frame method
-            if ret:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                height, width, channel = frame.shape
-                img = QImage(frame, width, height, QImage.Format_RGB888)
-                pix = QPixmap.fromImage(img)
+            if(time.time() - self.time_since_last_frame) > (((num_frames_to_skip+1.0)/self.cap.get(cv2.CAP_PROP_FPS) * (1.0/self.speed_ratio))):
+                print(count)
+                count=0
+                # if count % math.ceil(((self.cap.get(cv2.CAP_PROP_FPS) * (self.speed_ratio))) / (self.playback_rate)) > 0:
+                #     self.cap.grab()
+                #     continue
 
-            self.fps_begin = time.time()
+                # print(f"Num frames to skip: {num_frames_to_skip}")
+                print(time.time() - self.time_since_last_frame)
+
+                #count+=1
+                self.time_since_last_frame = time.time()
+                # if count <= num_frames_to_skip:
+                #     self.cap.grab()
+                #     continue
+
+                #count = 0
+                self.change_pixmap_signal.emit(GifState(pix, frames_since_begin / self.cap.get(cv2.CAP_PROP_FPS)))
+                ret, frame = self.cap.read() # takes time, calling grab instead of read will allow us to move forward in the frame method
+                if ret:
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    height, width, channel = frame.shape
+                    img = QImage(frame, width, height, QImage.Format_RGB888)
+                    pix = QPixmap.fromImage(img)
+
+                
+                frames_before_loop = self.seconds_before_loop * self.cap.get(cv2.CAP_PROP_FPS)
+                
+                # How many fames have passed in any given amount of time
+                frames_since_begin = (self.cap.get(cv2.CAP_PROP_POS_FRAMES) - self.input_frame)
+                
+                for _ in range(num_frames_to_skip):
+                    self.cap.grab()
+
+                # If goes past gif alloted time
+                if ((frames_since_begin > frames_before_loop) # goes past gif time 
+                or (frames_since_begin < 0) # move line backwards
+                or (self.reset_flag) #user resets
+                or ((self.cap.get(cv2.CAP_PROP_POS_FRAMES) == self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))): # goes past time count
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.input_frame)
+                    print(f"frames_before_loop:{frames_before_loop}")
+                    self.curr_frame = self.input_frame
+                    frames_since_begin = 0
+                    self.reset_flag = False
+                    last_reset_time = time.time()
+                #update image
             
-            frames_before_loop = self.seconds_before_loop * self.cap.get(cv2.CAP_PROP_FPS)
-            
-            # How many fames have passed in any given amount of time
-            frames_since_begin = (self.cap.get(cv2.CAP_PROP_POS_FRAMES) - self.input_frame)
-            #print(f"frames_since_being:{frames_since_begin}")
-            # If goes past gif alloted time
-            if ((frames_since_begin > frames_before_loop) # goes past gif time 
-            or (frames_since_begin < 0) # move line backwards
-            or (self.reset_flag) #user resets
-            or ((self.cap.get(cv2.CAP_PROP_POS_FRAMES) == self.cap.get(cv2.CAP_PROP_FRAME_COUNT)))): # goes past time count
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.input_frame)
-                print(f"frames_before_loop:{frames_before_loop}")
-                self.curr_frame = self.input_frame
-                frames_since_begin = 0
-                self.reset_flag = False
-            #update image
-            
-            self.change_pixmap_signal.emit(GifState(pix, frames_since_begin / self.cap.get(cv2.CAP_PROP_FPS)))
             
 
     def stop(self):
